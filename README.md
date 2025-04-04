@@ -1,7 +1,7 @@
 # QuickVAE
 
 **QuickVAE** is a Conditional Variational Autoencoder (CVAE) implementation developed for the **Deep Learning ScuDo Course**.
-The model is trained on a subset of the [Quick, Draw!](https://quickdraw.withgoogle.com/data) dataset and is capable of generating recognizable, class-conditioned sketch images.
+The model is trained on a subset of the [Quick, Draw!](https://quickdraw.withgoogle.com/data) dataset and is capable of generating sketch images.
 
 ### 🖼️ Example
 
