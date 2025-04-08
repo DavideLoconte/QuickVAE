@@ -30,7 +30,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ITERS = 10000
 """Number of iterations to train the model for"""
 
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 0.0005
 """Learning rate for the AdamW optimizer"""
 
 CLASSES: tuple[str, str, str] = ["cat", "dog", "bird"]
@@ -47,7 +47,7 @@ def main() -> int:
     train_loader, eval_loader = get_data_loaders(batch_size=BATCH_SIZE, split=SPLIT_RATIO, persistent_workers=True, num_workers=24, pin_memory=True, prefetch_factor=16)
 
     classes = CLASSES[:3]
-    latent_dim = 192
+    latent_dim = 128
 
     model, min_loss = get_model(checkpoint_path="checkpoint.pth", dataset_shape=(1, 28, 28), latent_dim=latent_dim, classes=len(classes))
     torch.set_float32_matmul_precision('high')
@@ -60,8 +60,11 @@ def main() -> int:
     losses: list[tuple[int, float]] = []
     should_break = False
 
-    for i in range(ITERS):
-        beta = min(1, i / 10) # Simulate annealing, by slowly increasing the weight of the KL divergence term
+    for i in range(0, ITERS):
+        if i < 300:
+            beta = min(1, i / 100) # Simulate annealing, by slowly increasing the weight of the KL divergence term
+        else:
+            beta = max(0.1, (600 - i) / (600 - 300)) # Slowly decrease the weight of the KL divergence term
 
         try:
             train_loss = train_model(model, optimizer, train_loader, beta)
@@ -73,12 +76,13 @@ def main() -> int:
         real_images, fake_images = generate_model_samples(model, eval_loader, latent_dim)
         save_model_samples(f"epochs/{i}.png", real_images, fake_images)
         save_model_samples("last.png", real_images, fake_images)
+        model.save("checkpoint.pth", min_loss)
 
         print(f"Epoch: {i}, Train Loss: {train_loss}, Eval Loss: {loss}")
 
         if min_loss > loss:
             min_loss = loss
-            model.save("checkpoint.pth", min_loss)
+            model.save("best.pth", min_loss)
             save_model_samples("best.png", real_images, fake_images)
             print("✓ Saved checkpoint.")
 
@@ -126,7 +130,7 @@ def _get_loss(x: torch.Tensor, x_hat: torch.Tensor, x_mean: torch.Tensor, x_logv
     Returns:
         torch.Tensor: the total loss
     """
-    recon_loss = F.smooth_l1_loss(x_hat, x, reduction="sum") / x.shape[0]
+    recon_loss = F.binary_cross_entropy(x_hat, x, reduction="sum") / x.shape[0]
     kl_loss = beta * (-0.5 * torch.sum(1 + x_logvar - x_mean.pow(2) - x_logvar.exp())) / x.shape[0]
     return recon_loss + kl_loss
 

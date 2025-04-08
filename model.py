@@ -1,7 +1,51 @@
 """This module defines the encoder, decoder, and full CVAE architecture"""
-
 import torch
+import torch.nn as nn
 
+class ResidualBlock(nn.Module):
+    """
+    Residual block for use in convolutional VAEs.
+
+    This block applies two convolutional layers with GELU activations and batch normalization,
+    and includes a residual (skip) connection. If the input and output channels differ,
+    a 1×1 convolution is applied to match dimensions.
+
+    Args:
+        in_channels (int): Number of input channels.
+        out_channels (int): Number of output channels.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+
+        # Optional skip connection if channel dimensions differ
+        self.skip = nn.Identity() if in_channels == out_channels else nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+        # First convolutional layer
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=5, padding=2),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU()
+        )
+
+        # Second convolutional layer
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(out_channels, out_channels, kernel_size=5, padding=2),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU()
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the residual block.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (N, C_in, H, W)
+
+        Returns:
+            torch.Tensor: Output tensor of shape (N, C_out, H, W)
+        """
+        return self.skip(x) + self.conv2(self.conv1(x))
 class Decoder(torch.nn.Module):
     """
     Upsampling Conditional Decoder for a Variational Autoencoder (VAE).
@@ -9,26 +53,29 @@ class Decoder(torch.nn.Module):
 
     def __init__(self, latent_size: int, class_vector_size: int, img_shape: tuple[int, int, int] = (1, 28, 28)):
         super().__init__()
-        assert(img_shape[1] % 4 == 0 and img_shape[2] % 4 == 0)
+        assert img_shape[1] % 4 == 0 and img_shape[2] % 4 == 0
 
         self.img_shape = img_shape  # (C, H, W)
         init_channels = 64
-        init_size_h = img_shape[2] // 4
-        init_size_w = img_shape[1] // 4
+        init_size_h = img_shape[1] // 4  # Height
+        init_size_w = img_shape[2] // 4  # Width
 
-        self.fc = torch.nn.Sequential(
-            torch.nn.Linear(latent_size + class_vector_size, init_channels * init_size_w * init_size_h),
-            torch.nn.GELU()
+        self.fc = nn.Sequential(
+            nn.Linear(latent_size + class_vector_size, init_channels * init_size_h * init_size_w),
+            nn.GELU()
         )
 
-        self.deconv = torch.nn.Sequential(
-            torch.nn.Unflatten(1, (init_channels, init_size_w, init_size_h)),
-            torch.nn.ConvTranspose2d(init_channels, 64, kernel_size=4, stride=2, padding=1),
-            torch.nn.GELU(),
-            torch.nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),
-            torch.nn.GELU(),
-            torch.nn.ConvTranspose2d(32, img_shape[0], kernel_size=3, padding=1),
-            torch.nn.Sigmoid()
+        self.deconv = nn.Sequential(
+            nn.Unflatten(1, (init_channels, init_size_h, init_size_w)),
+
+            ResidualBlock(init_channels, 64),
+            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.GELU(),
+
+            ResidualBlock(32, 32),
+            nn.ConvTranspose2d(32, self.img_shape[0], kernel_size=4, stride=2, padding=1),
+            nn.Sigmoid()
         )
 
     def forward(self, z: torch.Tensor, cls: torch.Tensor) -> torch.Tensor:
@@ -51,19 +98,27 @@ class VariationalEncoder(torch.nn.Module):
             latent_size (int): Dimension of the latent space.
         """
         super().__init__()
+        assert(input_shape[1] % 4 == 0 and input_shape[2] % 4 == 0)
+
         self._model = torch.nn.Sequential(
-            torch.nn.Conv2d(input_shape[0], 8, kernel_size=5, stride=1, padding=2),
+            ResidualBlock(input_shape[0], 8),
             torch.nn.GELU(),
-            torch.nn.Conv2d(8, 16, kernel_size=5, stride=1, padding=2),
+            ResidualBlock(8, 16),
+            torch.nn.MaxPool2d(2),
             torch.nn.GELU(),
-            torch.nn.Conv2d(16, 32, kernel_size=5, stride=1, padding=2),
+            ResidualBlock(16, 32),
+            torch.nn.MaxPool2d(2),
             torch.nn.GELU(),
-            torch.nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2),
+            ResidualBlock(32, 64),
+            torch.nn.MaxPool2d(2),
             torch.nn.GELU(),
             torch.nn.Flatten(),
         )
 
-        lin_input_size = 64 * input_shape[1] * input_shape[2] + class_size
+        with torch.no_grad():
+            dummy = torch.zeros(1, *input_shape)
+            dummy_out = self._model[:-1](dummy)  # remove Flatten()
+            lin_input_size = dummy_out.numel() + class_size
 
         self._means = torch.nn.Sequential(
             torch.nn.Linear(lin_input_size, latent_size * 2),
