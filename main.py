@@ -44,12 +44,14 @@ def main() -> int:
     """
     assert(len(CLASSES) == 3)
     print("Initializing...")
-    train_loader, eval_loader = get_data_loaders(batch_size=BATCH_SIZE, split=SPLIT_RATIO, persistent_workers=True, num_workers=8, pin_memory=True)
+    train_loader, eval_loader = get_data_loaders(batch_size=BATCH_SIZE, split=SPLIT_RATIO, persistent_workers=True, num_workers=24, pin_memory=True, prefetch_factor=16)
 
     classes = CLASSES[:3]
-    latent_dim = 128
+    latent_dim = 192
 
     model, min_loss = get_model(checkpoint_path="checkpoint.pth", dataset_shape=(1, 28, 28), latent_dim=latent_dim, classes=len(classes))
+    torch.set_float32_matmul_precision('high')
+    model = torch.compile(model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
     if not os.path.exists("epochs"):
@@ -59,7 +61,7 @@ def main() -> int:
     should_break = False
 
     for i in range(ITERS):
-        beta = min(4.0, i / 100) # Simulate annealing, by slowly increasing the weight of the KL divergence term
+        beta = min(1, i / 10) # Simulate annealing, by slowly increasing the weight of the KL divergence term
 
         try:
             train_loss = train_model(model, optimizer, train_loader, beta)
@@ -88,7 +90,7 @@ def main() -> int:
 
     return 0
 
-def get_data_loaders(batch_size: int = 128, split: float = 0.8, num_workers: int = 4, pin_memory: bool = True, persistent_workers = True) -> tuple[DataLoader, DataLoader]:
+def get_data_loaders(batch_size: int = 128, split: float = 0.8, num_workers: int = 4, pin_memory: bool = True, persistent_workers = True, prefetch_factor: int | None = None) -> tuple[DataLoader, DataLoader]:
     """Get train and eval dataloaders
 
     Args:
@@ -97,6 +99,7 @@ def get_data_loaders(batch_size: int = 128, split: float = 0.8, num_workers: int
         num_workers (int, optional): number of workers. Defaults to 4.
         pin_memory (bool, optional): pin memory. Defaults to True.
         persistent_workers (bool, optional): persistent workers. Defaults to True.
+        prefetch_factor (int, optional): prefetch factor. Defaults to None.
 
     Returns:
         tuple[DataLoader, DataLoader]: train and eval dataloaders for the Quick, Draw! dataset
@@ -105,8 +108,8 @@ def get_data_loaders(batch_size: int = 128, split: float = 0.8, num_workers: int
     train_size = int(split * len(dataset))
     eval_size = len(dataset) - train_size
     train_dataset, eval_dataset = random_split(dataset, [train_size, eval_size])
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
-    eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers, prefetch_factor=prefetch_factor)
+    eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers, prefetch_factor=prefetch_factor)
     return train_loader, eval_loader
 
 

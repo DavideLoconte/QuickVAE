@@ -4,48 +4,38 @@ import torch
 
 class Decoder(torch.nn.Module):
     """
-    Conditional Decoder for a Variational Autoencoder (VAE).
-    Reconstructs an image from a latent vector and a class condition.
+    Upsampling Conditional Decoder for a Variational Autoencoder (VAE).
     """
 
     def __init__(self, latent_size: int, class_vector_size: int, img_shape: tuple[int, int, int] = (1, 28, 28)):
-        """
-        Args:
-            latent_size (int): Dimension of the latent space.
-            class_vector_size (int): Dimension of the one-hot class vector.
-            img_shape (tuple[int, int, int]): Shape of the target image.
-        """
         super().__init__()
-        torch_dims = img_shape[0] * img_shape[1] * img_shape[2]
-        self._model = torch.nn.Sequential(
-            torch.nn.Linear(latent_size + class_vector_size,latent_size + class_vector_size),
+        assert(img_shape[1] % 4 == 0 and img_shape[2] % 4 == 0)
+
+        self.img_shape = img_shape  # (C, H, W)
+        init_channels = 64
+        init_size_h = img_shape[2] // 4
+        init_size_w = img_shape[1] // 4
+
+        self.fc = torch.nn.Sequential(
+            torch.nn.Linear(latent_size + class_vector_size, init_channels * init_size_w * init_size_h),
+            torch.nn.GELU()
+        )
+
+        self.deconv = torch.nn.Sequential(
+            torch.nn.Unflatten(1, (init_channels, init_size_w, init_size_h)),
+            torch.nn.ConvTranspose2d(init_channels, 64, kernel_size=4, stride=2, padding=1),
             torch.nn.GELU(),
-            torch.nn.Linear(latent_size + class_vector_size, torch_dims * 32),
+            torch.nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),
             torch.nn.GELU(),
-            torch.nn.Unflatten(1, (32, img_shape[1], img_shape[2])),
-            torch.nn.Conv2d(32, 16, kernel_size=5, stride=1, padding=2),
-            torch.nn.GELU(),
-            torch.nn.Conv2d(16, 8, kernel_size=5, stride=1, padding=2),
-            torch.nn.GELU(),
-            torch.nn.Conv2d(8, 4, kernel_size=5, stride=1, padding=2),
-            torch.nn.GELU(),
-            torch.nn.Conv2d(4, img_shape[0], kernel_size=5, stride=1, padding=2),
+            torch.nn.ConvTranspose2d(32, img_shape[0], kernel_size=3, padding=1),
             torch.nn.Sigmoid()
-            )
+        )
 
-    def forward(self, x: torch.Tensor, cls: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the decoder.
-
-        Args:
-            x (torch.Tensor): Latent vector of shape (B, latent_size).
-            cls (torch.Tensor): One-hot class vector of shape (B, class_vector_size).
-
-        Returns:
-            torch.Tensor: Reconstructed image of shape (B, C, H, W).
-        """
-        x = torch.cat((x, cls), dim=1)
-        return self._model(x)
+    def forward(self, z: torch.Tensor, cls: torch.Tensor) -> torch.Tensor:
+        x = torch.cat((z, cls), dim=1)
+        x = self.fc(x)
+        x = self.deconv(x)
+        return x
 
 
 class VariationalEncoder(torch.nn.Module):
@@ -62,23 +52,21 @@ class VariationalEncoder(torch.nn.Module):
         """
         super().__init__()
         self._model = torch.nn.Sequential(
-            torch.nn.Conv2d(input_shape[0], 4, kernel_size=5, stride=1, padding=2),
-            torch.nn.GELU(),
-            torch.nn.Conv2d(4, 8, kernel_size=5, stride=1, padding=2),
+            torch.nn.Conv2d(input_shape[0], 8, kernel_size=5, stride=1, padding=2),
             torch.nn.GELU(),
             torch.nn.Conv2d(8, 16, kernel_size=5, stride=1, padding=2),
             torch.nn.GELU(),
             torch.nn.Conv2d(16, 32, kernel_size=5, stride=1, padding=2),
             torch.nn.GELU(),
+            torch.nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2),
+            torch.nn.GELU(),
             torch.nn.Flatten(),
-            torch.nn.Linear(32 * input_shape[1] * input_shape[2], latent_size),
-            torch.nn.GELU(),
-            torch.nn.Linear(latent_size, latent_size),
-            torch.nn.GELU(),
         )
 
+        lin_input_size = 64 * input_shape[1] * input_shape[2] + class_size
+
         self._means = torch.nn.Sequential(
-            torch.nn.Linear(latent_size+class_size, latent_size * 2),
+            torch.nn.Linear(lin_input_size, latent_size * 2),
             torch.nn.GELU(),
             torch.nn.Linear(latent_size * 2, latent_size * 2),
             torch.nn.GELU(),
@@ -86,7 +74,7 @@ class VariationalEncoder(torch.nn.Module):
         )
 
         self._logvar  = torch.nn.Sequential(
-            torch.nn.Linear(latent_size+class_size, latent_size * 2),
+            torch.nn.Linear(lin_input_size, latent_size * 2),
             torch.nn.GELU(),
             torch.nn.Linear(latent_size * 2, latent_size * 2),
             torch.nn.GELU(),
@@ -215,7 +203,7 @@ class VariationalAutoencoder(torch.nn.Module):
         checkpoint = torch.load(path)
 
         if loss is not None and loss < checkpoint["loss"]:
-            return checkpoint["loss"] # Early stop, model is already better
+            return checkpoint["loss"]
 
         self.load_state_dict(checkpoint["state_dict"])
         return checkpoint["loss"]
